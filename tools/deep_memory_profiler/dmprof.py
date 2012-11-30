@@ -27,7 +27,6 @@ VIRTUAL = 0
 COMMITTED = 1
 ALLOC_COUNT = 2
 FREE_COUNT = 3
-NULL_REGEX = re.compile('')
 
 LOGGER = logging.getLogger('dmprof')
 POLICIES_JSON_PATH = os.path.join(BASE_PATH, 'policies.json')
@@ -617,6 +616,21 @@ class BucketSet(object):
       yield function
 
 
+class BucketStat(object):
+  VIRTUAL = 0
+  COMMITTED = 1
+  ALLOC_COUNT = 2
+  FREE_COUNT = 3
+  BUCKET_ID = 5
+
+  def __init__(self, bucket_id, virtual, committed, n_alloc, n_free):
+    self._bucket_id = bucket_id
+    self._virtual = virtual
+    self._committed = committed
+    self._n_alloc = n_alloc
+    self._n_free = n_free
+
+
 class Dump(object):
   """Represents a heap profile dump."""
 
@@ -637,6 +651,7 @@ class Dump(object):
   def time(self):
     return self._time
 
+  # TODO(dmikurube): It should be iter_bucket_stat?
   @property
   def iter_stacktrace(self):
     for line in self._stacktrace_lines:
