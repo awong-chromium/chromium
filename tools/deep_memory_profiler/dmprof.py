@@ -4,6 +4,7 @@
 
 """The deep heap profiler script for Chrome."""
 
+import copy
 from datetime import datetime
 import json
 import logging
@@ -11,6 +12,8 @@ import optparse
 import os
 import re
 import sys
+
+from range_dict import ExclusiveRangeDict
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 FIND_RUNTIME_SYMBOLS_PATH = os.path.join(
@@ -21,6 +24,8 @@ from find_runtime_symbols import find_runtime_symbols_list
 from find_runtime_symbols import find_runtime_typeinfo_symbols_list
 from find_runtime_symbols import RuntimeSymbolsInProcess
 from prepare_symbol_info import prepare_symbol_info
+from proc_maps import ProcMaps
+from proc_maps import ProcMapsEntry
 
 BUCKET_ID = 5
 VIRTUAL = 0
@@ -104,6 +109,86 @@ class ObsoleteDumpVersionException(ParsingException):
     self.value = value
   def __str__(self):
     return "obsolete heap profile dump version: %s" % repr(self.value)
+
+
+class ListAttribute(ExclusiveRangeDict.RangeAttribute):
+  def __init__(self):
+    self._list = []
+
+  def __str__(self):
+    return str(self._list)
+
+  def __repr__(self):
+    return 'ListAttribute' + str(self._list)
+
+  def __len__(self):
+    return len(self._list)
+
+  def __iter__(self):
+    for x in self._list:
+      yield x
+
+  def __getitem__(self, index):
+    return self._list[index]
+
+  def __setitem__(self, index, value):
+    if index >= len(self._list):
+      self._list.extend([None] * (index + 1 - len(self._list)))
+    self._list[index] = value
+
+  # It's bad.  Why???
+  # def copy(self):
+  #   return ListAttribute(copy.deepcopy(self._list))
+
+  def copy(self):
+    new = ListAttribute()
+    new._replace(copy.deepcopy(self._list))
+    return new
+
+  def _replace(self, new_list):
+    self._list = new_list
+
+
+class ProcMapsEntryAttribute(ExclusiveRangeDict.RangeAttribute):
+  _DUMMY_ENTRY = ProcMapsEntry(
+      0,     # begin
+      0,     # end
+      '-',   # readable
+      '-',   # writable
+      '-',   # executable
+      '-',   # private
+      0,     # offset
+      '00',  # major
+      '00',  # minor
+      0,     # inode
+      ''     # name
+      )
+
+  def __init__(self):
+    self._entry = self._DUMMY_ENTRY.as_dict()
+
+  def __str__(self):
+    return str(self._entry)
+
+  def __repr__(self):
+    return 'ProcMapsEntryAttribute' + str(self._entry)
+
+  def __getitem__(self, key):
+    return self._entry[key]
+
+  def __setitem__(self, key, value):
+    if self._entry.has_key(key):
+      self._entry[key] = value
+    else:
+      raise KeyError(key)
+
+  def copy(self):
+    new = ProcMapsEntryAttribute()
+    new._replace(copy.deepcopy(self._entry))
+    return new
+
+  def _replace(self, new_entry):
+    self._entry = new_entry
 
 
 def skip_while(index, max_index, skipping_condition):
@@ -489,6 +574,17 @@ class Bucket(object):
 
     self.component_cache = ''
 
+  def __str__(self):
+    result = []
+    result.append('mmap' if self._mmap else 'malloc')
+    if self._symbolized_typeinfo == 'no typeinfo':
+      result.append('tno_typeinfo')
+    else:
+      result.append('t' + self._symbolized_typeinfo)
+    result.append('n' + self._typeinfo_name)
+    result.extend(self._symbolized_stacktrace)
+    return ' '.join(result)
+
   def symbolize(self, symbol_mapping_cache):
     """Makes a symbolized stacktrace and typeinfo with |symbol_mapping_cache|.
 
@@ -634,9 +730,20 @@ class BucketStat(object):
 class Dump(object):
   """Represents a heap profile dump."""
 
+  _PATH_PATTERN = re.compile('^(.*)\.([0-9]+)\.([0-9]+)\.heap$')
+
+  _HOOK_PATTERN = re.compile(
+      '^ ([ \(])([a-f0-9]+)([ \)])-([ \(])([a-f0-9]+)([ \)])\s+'
+      '(hooked|unhooked)\s+(.+)$', re.IGNORECASE)
+
   def __init__(self, path, time):
     self._path = path
+    matched = self._PATH_PATTERN.match(path)
+    self._pid = int(matched.group(2))
+    self._count = int(matched.group(3))
     self._time = time
+    self._map = {}
+    self._procmaps = ExclusiveRangeDict(ProcMapsEntryAttribute)
     self._stacktrace_lines = []
     self._global_stats = {} # used only in apply_policy
 
@@ -648,8 +755,21 @@ class Dump(object):
     return self._path
 
   @property
+  def count(self):
+    return self._count
+
+  @property
   def time(self):
     return self._time
+
+  @property
+  def iter_map(self):
+    for region in sorted(self._map.iteritems()):
+      yield region[0], region[1]
+
+  def iter_procmaps(self):
+    for begin, end, attr in self._map.iter_range():
+      yield begin, end, attr
 
   # TODO(dmikurube): It should be iter_bucket_stat?
   @property
@@ -685,6 +805,8 @@ class Dump(object):
 
     try:
       self._version, ln = self._parse_version()
+      if self._version == DUMP_DEEP_6:
+        self._parse_mmap_list()
       self._parse_global_stats()
       self._extract_stacktrace_lines(ln)
     except EmptyDumpException:
@@ -755,6 +877,32 @@ class Dump(object):
       words = self._lines[ln].split()
       self._global_stats[prefix + '_virtual'] = int(words[-2])
       self._global_stats[prefix + '_committed'] = int(words[-1])
+
+  def _parse_mmap_list(self):
+    """Parses lines in self._lines as a mmap list."""
+    (ln, found) = skip_while(
+        0, len(self._lines),
+        lambda n: self._lines[n] != 'MMAP_LIST:\n')
+    if not found:
+      return {}
+
+    ln += 1
+    self._map = {}
+    while True:
+      entry = ProcMaps.parse_line(self._lines[ln])
+      if entry:
+        for begin, end, attr in self._procmaps.iter_range(entry.begin, entry.end):
+          for key, value in entry.as_dict().iteritems():
+            attr[key] = value
+        ln += 1
+        continue
+      matched = self._HOOK_PATTERN.match(self._lines[ln])
+      if not matched:
+        break
+      self._map[(int(matched.group(2), 16),
+                 int(matched.group(5), 16))] = (matched.group(7),
+                                                matched.group(8))
+      ln += 1
 
   def _extract_stacktrace_lines(self, line_number):
     """Extracts the position of stacktrace lines.
@@ -835,16 +983,17 @@ class Command(object):
     self._parser = optparse.OptionParser(usage)
 
   @staticmethod
-  def load_basic_files(dump_path, multiple):
+  def load_basic_files(dump_path, multiple, no_dump=False):
     prefix = Command._find_prefix(dump_path)
     symbol_data_sources = SymbolDataSources(prefix)
     symbol_data_sources.prepare()
     bucket_set = BucketSet()
     bucket_set.load(prefix)
-    if multiple:
-      dump_list = DumpList.load(Command._find_all_dumps(dump_path))
-    else:
-      dump = Dump.load(dump_path)
+    if not no_dump:
+      if multiple:
+        dump_list = DumpList.load(Command._find_all_dumps(dump_path))
+      else:
+        dump = Dump.load(dump_path)
     symbol_mapping_cache = SymbolMappingCache()
     with open(prefix + '.funcsym', 'a+') as cache_f:
       symbol_mapping_cache.update(
@@ -855,7 +1004,9 @@ class Command(object):
           TYPEINFO_ADDRESS, bucket_set,
           SymbolFinder(TYPEINFO_ADDRESS, symbol_data_sources), cache_f)
     bucket_set.symbolize(symbol_mapping_cache)
-    if multiple:
+    if no_dump:
+      return bucket_set
+    elif multiple:
       return (bucket_set, dump_list)
     else:
       return (bucket_set, dump)
@@ -894,6 +1045,30 @@ class Command(object):
       return options_policy.split(',')
     else:
       return None
+
+
+class BucketsCommand(Command):
+  def __init__(self):
+    super(BucketsCommand, self).__init__('Usage: %prog buckets <first-dump>')
+
+  def do(self, sys_argv):
+    _, args = self._parse_args(sys_argv, 1)
+    dump_path = args[1]
+    bucket_set = Command.load_basic_files(dump_path, True, True)
+
+    BucketsCommand._output(bucket_set, sys.stdout)
+    return 0
+
+  @staticmethod
+  def _output(bucket_set, out):
+    """Prints all buckets with resolving symbols.
+
+    Args:
+        bucket_set: A BucketSet object.
+        out: An IO object to output.
+    """
+    for bucket_id, bucket in sorted(bucket_set):
+      print '%d: %s' % (bucket_id, bucket)
 
 
 class StacktraceCommand(Command):
@@ -1149,6 +1324,57 @@ class ListCommand(PolicyCommands):
     return 0
 
 
+class MapCommand(Command):
+  def __init__(self):
+    super(MapCommand, self).__init__('Usage: %prog map <first-dump> <policy>')
+
+  def do(self, sys_argv):
+    _, args = self._parse_args(sys_argv, 2)
+    dump_path = args[1]
+    target_policy = args[2]
+    (bucket_set, dumps) = Command.load_basic_files(dump_path, True)
+    policy_set = PolicySet.load(Command._parse_policy_list(target_policy))
+
+    MapCommand._output(dumps, bucket_set, policy_set[target_policy], sys.stdout)
+    return 0
+
+  @staticmethod
+  def _output(dumps, bucket_set, policy, out):
+    """Prints all stacktraces in a given component of given depth.
+
+    Args:
+        dumps: A list of Dump objects.
+        bucket_set: A BucketSet object.
+        policy: A Policy object.
+        out: An IO object to output.
+    """
+    max_dump_count = 0
+    range_dict = ExclusiveRangeDict(ListAttribute)
+    for dump in dumps:
+      max_dump_count = max(max_dump_count, dump.count)
+      for key, value in dump.iter_map:
+        for begin, end, attr in range_dict.iter_range(key[0], key[1]):
+          attr[dump.count] = value
+
+    max_dump_count_digit = len(str(max_dump_count))
+    for begin, end, attr in range_dict.iter_range():
+      out.write('%x-%x\n' % (begin, end))
+      if len(attr) < max_dump_count:
+        attr[max_dump_count] = None
+      for index, x in enumerate(attr[1:]):
+        out.write('  #%0*d: ' % (max_dump_count_digit, index + 1))
+        if not x:
+          out.write('None\n')
+        elif x[0] == 'hooked':
+          attrs = x[1].split()
+          bucket_id = int(attrs[2])
+          bucket = bucket_set.get(bucket_id)
+          component = policy.find(bucket)
+          out.write('hooked: %s %s @ %d\n' % (attrs[0], component, bucket_id))
+        else:
+          out.write('unhooked: in a mass of %s bytes\n' % x[1])
+
+
 class ExpandCommand(Command):
   def __init__(self):
     super(ExpandCommand, self).__init__(
@@ -1321,10 +1547,12 @@ class PProfCommand(Command):
 
 def main():
   COMMANDS = {
+    'buckets': BucketsCommand,
     'csv': CSVCommand,
     'expand': ExpandCommand,
     'json': JSONCommand,
     'list': ListCommand,
+    'map': MapCommand,
     'pprof': PProfCommand,
     'stacktrace': StacktraceCommand,
   }
@@ -1333,18 +1561,22 @@ def main():
     sys.stderr.write("""Usage: dmprof <command> [options] [<args>]
 
 Commands:
+   buckets      Dump a bucket list with resolving symbols
    csv          Classify memory usage in CSV
    expand       Show all stacktraces contained in the specified component
    json         Classify memory usage in JSON
    list         Classify memory usage in simple listing format
+   map          Show history of mapped regions
    pprof        Format the profile dump so that it can be processed by pprof
    stacktrace   Convert runtime addresses to symbol names
 
 Quick Reference:
+   dmprof buckets <first-dump>
    dmprof csv [-p POLICY] <first-dump>
    dmprof expand <dump> <policy> <component> <depth>
    dmprof json [-p POLICY] <first-dump>
    dmprof list [-p POLICY] <first-dump>
+   dmprof map <first-dump>
    dmprof pprof [-c COMPONENT] <dump> <policy>
    dmprof stacktrace <dump>
 """)
