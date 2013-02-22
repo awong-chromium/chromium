@@ -100,6 +100,8 @@ class DeepMemoryProfiler(object):
     self._tempdir = tempfile.mkdtemp(prefix=dir_prefix)
     os.environ['HEAPPROFILE'] = os.path.join(self._tempdir, 'endure')
     os.environ['HEAP_PROFILE_MMAP'] = '1'
+    os.environ['HEAP_PROFILE_ALLOCATION_INTERVAL'] = '0'
+    os.environ['HEAP_PROFILE_INUSE_INTERVAL'] = '0'
     os.environ['DEEP_HEAP_PROFILE'] = '1'
 
   def TearDown(self):
@@ -112,6 +114,8 @@ class DeepMemoryProfiler(object):
       return
 
     del os.environ['DEEP_HEAP_PROFILE']
+    del os.environ['HEAP_PROFILE_INUSE_INTERVAL']
+    del os.environ['HEAP_PROFILE_ALLOCATION_INTERVAL']
     del os.environ['HEAP_PROFILE_MMAP']
     del os.environ['HEAPPROFILE']
     if not self._save and self._tempdir:
