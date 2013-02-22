@@ -185,6 +185,16 @@ struct LowLevelAlloc::Arena {
   explicit Arena(int) : pagesize(0) {}  // set pagesize to zero explicitly
                                         // for non-static init
 
+  size_t Size(){
+    size_t size = 0;
+    AllocList *region = freelist.next[0];
+    while (region != 0) {
+      size += region->header.size;
+      region = region->next[0];
+    }
+    return size;
+  }
+
   SpinLock mu;            // protects freelist, allocation_count,
                           // pagesize, roundup, min_size
   AllocList freelist;     // head of free list; sorted by addr (under mu)
@@ -519,4 +529,8 @@ void *LowLevelAlloc::AllocWithArena(size_t request, Arena *arena) {
 
 LowLevelAlloc::Arena *LowLevelAlloc::DefaultArena() {
   return &default_arena;
+}
+
+size_t LowLevelAlloc::GetSizeOfUnhookedArena() {
+  return unhooked_arena.Size();
 }

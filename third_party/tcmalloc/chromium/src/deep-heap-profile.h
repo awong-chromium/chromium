@@ -291,6 +291,8 @@ class DeepHeapProfile {
 
     RegionStats unhooked_[NUMBER_OF_MAPS_REGION_TYPES];
 
+    RegionStats unhooked_arena_;
+
     // Total bytes of malloc'ed regions.
     RegionStats profiled_malloc_;
 

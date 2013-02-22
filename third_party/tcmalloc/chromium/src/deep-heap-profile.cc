@@ -19,6 +19,7 @@
 #endif  // HAVE_UNISTD_H
 
 #include "base/cycleclock.h"
+#include "base/low_level_alloc.h"
 #include "base/sysinfo.h"
 #include "internal_logging.h"  // for ASSERT, etc
 
@@ -647,6 +648,11 @@ void DeepHeapProfile::GlobalStats::SnapshotProcMaps(
     unhooked_[i].Initialize();
   }
 
+  size_t unhooked_arena_size = LowLevelAlloc::GetSizeOfUnhookedArena();
+  unhooked_arena_.Initialize();
+  unhooked_arena_.AddToVirtualBytes(unhooked_arena_size);
+  unhooked_arena_.AddToCommittedBytes(unhooked_arena_size);
+
   while (iterator.Next(&first_address, &last_address,
                        &flags, &offset, &inode, &filename)) {
     if (mmap_dump_buffer) {
@@ -814,6 +820,7 @@ void DeepHeapProfile::GlobalStats::Unparse(TextBuffer* buffer) {
   unhooked_[OTHER].Unparse("nonprofiled-other", buffer);
   profiled_mmap_.Unparse("profiled-mmap", buffer);
   profiled_malloc_.Unparse("profiled-malloc", buffer);
+  unhooked_arena_.Unparse("unhooked-arena", buffer);
 }
 
 // static

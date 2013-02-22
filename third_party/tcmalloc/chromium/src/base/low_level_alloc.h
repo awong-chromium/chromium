@@ -99,6 +99,8 @@ class LowLevelAlloc {
   // The default arena that always exists.
   static Arena *DefaultArena();
 
+  static size_t GetSizeOfUnhookedArena();
+
  private:
   LowLevelAlloc();      // no instances
 };
