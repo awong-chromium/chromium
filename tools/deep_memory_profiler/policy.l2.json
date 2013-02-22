@@ -1,6 +1,7 @@
 {
   "components": [
     "second",
+    "unhooked-arena",
     "mmap-profiler",
     "mmap-type-profiler",
     "mmap-tcmalloc",
@@ -71,6 +72,11 @@
   "rules": [
     {
       "name": "second",
+      "stacktrace": "optional",
+      "allocator": "optional"
+    },
+    {
+      "name": "unhooked-arena",
       "stacktrace": "optional",
       "allocator": "optional"
     },

@@ -746,7 +746,7 @@ class Dump(object):
         'nonprofiled-absent', 'nonprofiled-anonymous',
         'nonprofiled-file-exec', 'nonprofiled-file-nonexec',
         'nonprofiled-stack', 'nonprofiled-other',
-        'profiled-mmap', 'profiled-malloc']
+        'profiled-mmap', 'profiled-malloc', 'unhooked-arena']
 
     for prefix in global_stat_names:
       (ln, _) = skip_while(
@@ -1001,6 +1001,9 @@ class PolicyCommands(Command):
         'other-vm': 'other_virtual' }.iteritems():
       if key in sizes:
         sizes[key] = dump.global_stat(value)
+
+    sizes['unhooked-anonymous'] -= dump.global_stat('unhooked-arena_committed')
+    sizes['unhooked-arena'] = dump.global_stat('unhooked-arena_committed')
 
     if 'mustbezero' in sizes:
       removed_list = (
