@@ -63,7 +63,6 @@
 #include "symbolize.h"
 #include <gperftools/stacktrace.h>
 #include <gperftools/malloc_hook.h>
-#include "memory_region_map.h"
 #include "base/commandlineflags.h"
 #include "base/logging.h"    // for the RawFD I/O commands
 #include "base/sysinfo.h"
@@ -102,8 +101,7 @@ const char HeapProfileTable::kFileExt[] = ".heap";
 
 //----------------------------------------------------------------------
 
-// Size for alloc_table_ and mmap_table_.
-static const int kHashTableSize = 179999;
+static const int kHashTableSize = 179999;   // Size for table_.
 /*static*/ const int HeapProfileTable::kMaxStackDepth;
 
 //----------------------------------------------------------------------
@@ -127,60 +125,38 @@ static bool ByAllocatedSpace(HeapProfileTable::Stats* a,
 
 HeapProfileTable::HeapProfileTable(Allocator alloc, DeAllocator dealloc)
     : alloc_(alloc), dealloc_(dealloc) {
-  // Initialize the overall profile stats.
-  memset(&total_, 0, sizeof(total_));
-
-  // Make the malloc table.
-  const int alloc_table_bytes = kHashTableSize * sizeof(*alloc_table_);
-  alloc_table_ = reinterpret_cast<Bucket**>(alloc_(alloc_table_bytes));
-  memset(alloc_table_, 0, alloc_table_bytes);
-  num_alloc_buckets_ = 0;
-
-  // Initialize the mmap table.
-  mmap_table_ = NULL;
-  num_available_mmap_buckets_ = 0;
-
-  // Make malloc and mmap allocation maps.
+  // Make the table
+  const int table_bytes = kHashTableSize * sizeof(*table_);
+  table_ = reinterpret_cast<Bucket**>(alloc_(table_bytes));
+  memset(table_, 0, table_bytes);
+  // Make allocation map
   alloc_address_map_ =
-      new(alloc_(sizeof(AllocationMap))) AllocationMap(alloc_, dealloc_);
-  mmap_address_map_ = NULL;
+    new(alloc_(sizeof(AllocationMap))) AllocationMap(alloc_, dealloc_);
+  // init the rest:
+  memset(&total_, 0, sizeof(total_));
+  num_buckets_ = 0;
 }
 
 HeapProfileTable::~HeapProfileTable() {
-  DeallocateBucketTable(alloc_table_);
-  alloc_table_ = NULL;
-  DeallocateBucketTable(mmap_table_);
-  mmap_table_ = NULL;
-  DeallocateAllocationMap(alloc_address_map_);
+  // free allocation map
+  alloc_address_map_->~AllocationMap();
+  dealloc_(alloc_address_map_);
   alloc_address_map_ = NULL;
-  DeallocateAllocationMap(mmap_address_map_);
-  mmap_address_map_ = NULL;
-}
-
-void HeapProfileTable::DeallocateAllocationMap(AllocationMap* allocation) {
-  if (allocation != NULL) {
-    alloc_address_map_->~AllocationMap();
-    dealloc_(allocation);
-  }
-}
-
-void HeapProfileTable::DeallocateBucketTable(Bucket** table) {
-  if (table != NULL) {
-    for (int b = 0; b < kHashTableSize; b++) {
-      for (Bucket* x = table[b]; x != 0; /**/) {
-        Bucket* b = x;
-        x = x->next;
-        dealloc_(b->stack);
-        dealloc_(b);
-      }
+  // free hash table
+  for (int b = 0; b < kHashTableSize; b++) {
+    for (Bucket* x = table_[b]; x != 0; /**/) {
+      Bucket* b = x;
+      x = x->next;
+      dealloc_(b->stack);
+      dealloc_(b);
     }
-    dealloc_(table);
   }
+  dealloc_(table_);
+  table_ = NULL;
 }
 
-HeapProfileTable::Bucket* HeapProfileTable::GetBucket(
-    int depth, const void* const key[], Bucket** table,
-    int* bucket_count) {
+HeapProfileTable::Bucket* HeapProfileTable::GetBucket(int depth,
+                                                      const void* const key[]) {
   // Make hash-value
   uintptr_t h = 0;
   for (int i = 0; i < depth; i++) {
@@ -193,7 +169,7 @@ HeapProfileTable::Bucket* HeapProfileTable::GetBucket(
 
   // Lookup stack trace in table
   unsigned int buck = ((unsigned int) h) % kHashTableSize;
-  for (Bucket* b = table[buck]; b != 0; b = b->next) {
+  for (Bucket* b = table_[buck]; b != 0; b = b->next) {
     if ((b->hash == h) &&
         (b->depth == depth) &&
         equal(key, key + depth, b->stack)) {
@@ -210,11 +186,9 @@ HeapProfileTable::Bucket* HeapProfileTable::GetBucket(
   b->hash  = h;
   b->depth = depth;
   b->stack = kcopy;
-  b->next  = table[buck];
-  table[buck] = b;
-  if (bucket_count != NULL) {
-    ++(*bucket_count);
-  }
+  b->next  = table_[buck];
+  table_[buck] = b;
+  num_buckets_++;
   return b;
 }
 
@@ -227,8 +201,7 @@ int HeapProfileTable::GetCallerStackTrace(
 void HeapProfileTable::RecordAlloc(
     const void* ptr, size_t bytes, int stack_depth,
     const void* const call_stack[]) {
-  Bucket* b = GetBucket(stack_depth, call_stack, alloc_table_,
-                        &num_alloc_buckets_);
+  Bucket* b = GetBucket(stack_depth, call_stack);
   b->allocs++;
   b->alloc_size += bytes;
   total_.allocs++;
@@ -346,74 +319,20 @@ int HeapProfileTable::UnparseBucket(const Bucket& b,
 
 HeapProfileTable::Bucket**
 HeapProfileTable::MakeSortedBucketList() const {
-  Bucket** list = reinterpret_cast<Bucket**>(alloc_(sizeof(Bucket) *
-      (num_alloc_buckets_ + num_available_mmap_buckets_)));
-
-  RAW_DCHECK(mmap_table_ != NULL || num_available_mmap_buckets_ == 0, "");
+  Bucket** list =
+    reinterpret_cast<Bucket**>(alloc_(sizeof(Bucket) * num_buckets_));
 
   int n = 0;
-
   for (int b = 0; b < kHashTableSize; b++) {
-    for (Bucket* x = alloc_table_[b]; x != 0; x = x->next) {
+    for (Bucket* x = table_[b]; x != 0; x = x->next) {
       list[n++] = x;
     }
   }
-  RAW_DCHECK(n == num_alloc_buckets_, "");
+  RAW_DCHECK(n == num_buckets_, "");
 
-  if (mmap_table_ != NULL) {
-    for (int b = 0; b < kHashTableSize; b++) {
-      for (Bucket* x = mmap_table_[b]; x != 0; x = x->next) {
-        list[n++] = x;
-      }
-    }
-  }
-  RAW_DCHECK(n == num_alloc_buckets_ + num_available_mmap_buckets_, "");
-
-  sort(list, list + num_alloc_buckets_ + num_available_mmap_buckets_,
-       ByAllocatedSpace);
+  sort(list, list + num_buckets_, ByAllocatedSpace);
 
   return list;
-}
-
-void HeapProfileTable::RefreshMMapData() {
-  // Make the table
-  static const int mmap_table_bytes = kHashTableSize * sizeof(*mmap_table_);
-  if (mmap_table_ == NULL) {
-    mmap_table_ = reinterpret_cast<Bucket**>(alloc_(mmap_table_bytes));
-    memset(mmap_table_, 0, mmap_table_bytes);
-  }
-  num_available_mmap_buckets_ = 0;
-
-  ClearMMapData();
-  mmap_address_map_ =
-      new(alloc_(sizeof(AllocationMap))) AllocationMap(alloc_, dealloc_);
-
-  MemoryRegionMap::LockHolder l;
-  for (MemoryRegionMap::RegionIterator r =
-           MemoryRegionMap::BeginRegionLocked();
-       r != MemoryRegionMap::EndRegionLocked(); ++r) {
-    Bucket* b =
-        GetBucket(r->call_stack_depth, r->call_stack, mmap_table_, NULL);
-    if (b->alloc_size == 0) {
-      num_available_mmap_buckets_ += 1;
-    }
-    b->allocs += 1;
-    b->alloc_size += r->end_addr - r->start_addr;
-
-    AllocValue v;
-    v.set_bucket(b);
-    v.bytes = r->end_addr - r->start_addr;
-    mmap_address_map_->Insert(reinterpret_cast<const void*>(r->start_addr), v);
-  }
-}
-
-void HeapProfileTable::ClearMMapData() {
-  if (mmap_address_map_ != NULL) {
-    mmap_address_map_->Iterate(ZeroBucketCountsIterator, this);
-    mmap_address_map_->~AllocationMap();
-    dealloc_(mmap_address_map_);
-    mmap_address_map_ = NULL;
-  }
 }
 
 void HeapProfileTable::DumpMarkedObjects(AllocationMark mark,
@@ -455,7 +374,7 @@ void HeapProfileTable::IterateOrderedAllocContexts(
     AllocContextIterator callback) const {
   Bucket** list = MakeSortedBucketList();
   AllocContextInfo info;
-  for (int i = 0; i < num_alloc_buckets_; ++i) {
+  for (int i = 0; i < num_buckets_; ++i) {
     *static_cast<Stats*>(&info) = *static_cast<Stats*>(list[i]);
     info.stack_depth = list[i]->depth;
     info.call_stack = list[i]->stack;
@@ -487,14 +406,9 @@ int HeapProfileTable::FillOrderedProfile(char buf[], int size) const {
   memset(&stats, 0, sizeof(stats));
   int bucket_length = snprintf(buf, size, "%s", kProfileHeader);
   if (bucket_length < 0 || bucket_length >= size) return 0;
-  Bucket total_with_mmap(total_);
-  if (mmap_table_ != NULL) {
-    total_with_mmap.alloc_size += MemoryRegionMap::MapSize();
-    total_with_mmap.free_size += MemoryRegionMap::UnmapSize();
-  }
-  bucket_length = UnparseBucket(total_with_mmap, buf, bucket_length, size,
+  bucket_length = UnparseBucket(total_, buf, bucket_length, size,
                                 " heapprofile", &stats);
-  for (int i = 0; i < num_alloc_buckets_; i++) {
+  for (int i = 0; i < num_buckets_; i++) {
     bucket_length = UnparseBucket(*list[i], buf, bucket_length, size, "",
                                   &stats);
   }
@@ -596,17 +510,6 @@ void HeapProfileTable::MarkIterator(const void* ptr, AllocValue* v,
   if (!args.mark_all && v->mark() != UNMARKED)
     return;
   v->set_mark(args.mark);
-}
-
-inline void HeapProfileTable::ZeroBucketCountsIterator(
-    const void* ptr, AllocValue* v, HeapProfileTable* heap_profile) {
-  Bucket* b = v->bucket();
-  if (b != NULL) {
-    b->allocs = 0;
-    b->alloc_size = 0;
-    b->free_size = 0;
-    b->frees = 0;
-  }
 }
 
 // Callback from NonLiveSnapshot; adds entry to arg->dest
