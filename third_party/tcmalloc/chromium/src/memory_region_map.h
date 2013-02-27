@@ -45,6 +45,7 @@
 #include "base/spinlock.h"
 #include "base/thread_annotations.h"
 #include "base/low_level_alloc.h"
+#include "heap-profile-stats.h"
 
 // TODO(maxim): add a unittest:
 //  execute a bunch of mmaps and compare memory map what strace logs
@@ -72,6 +73,8 @@ class MemoryRegionMap {
   // don't take the address of it!
   static const int kMaxStackDepth = 32;
 
+  static const int kHashTableSize = 179999;
+
  public:
   // interface ================================================================
 
@@ -87,17 +90,21 @@ class MemoryRegionMap {
   // are automatically shrunk to "max_stack_depth" when they are recorded.
   // Init() can be called more than once w/o harm, largest max_stack_depth
   // will be the effective one.
+  // It counts mmap and munmap sizes per stack trace if "use_buckets".
   // It will install mmap, munmap, mremap, sbrk hooks
   // and initialize arena_ and our hook and locks, hence one can use
   // MemoryRegionMap::Lock()/Unlock() to manage the locks.
   // Uses Lock/Unlock inside.
-  static void Init(int max_stack_depth);
+  static void Init(int max_stack_depth, bool use_buckets);
 
   // Try to shutdown this module undoing what Init() did.
   // Returns true iff could do full shutdown (or it was not attempted).
   // Full shutdown is attempted when the number of Shutdown() calls equals
   // the number of Init() calls.
   static bool Shutdown();
+
+  // Return true if MemoryRegionMap is initialized and working.
+  static bool IsWorking();
 
   // Locks to protect our internal data structures.
   // These also protect use of arena_ if our Init() has been done.
@@ -117,6 +124,10 @@ class MemoryRegionMap {
    private:
     DISALLOW_COPY_AND_ASSIGN(LockHolder);
   };
+
+  // Profile stats.
+  typedef HeapProfileStats Stats;
+  typedef HeapProfileBucket Bucket;
 
   // A memory region that we know about through malloc_hook-s.
   // This is essentially an interface through which MemoryRegionMap
@@ -214,6 +225,15 @@ class MemoryRegionMap {
   // Returns success. Uses Lock/Unlock inside.
   static bool FindAndMarkStackRegion(uintptr_t stack_top, Region* result);
 
+  // Iterate over the buckets which store mmap and munmap counts per stack
+  // trace.  It calls "callback" for each bucket, and passes "arg" to it.
+  template<class Type>
+  static void IterateBuckets(void (*callback)(const Bucket*, Type), Type arg);
+
+  // Get the bucket for the caller stack trace "key" of depth "depth"
+  // creating the bucket if needed.
+  static Bucket* GetBucket(int depth, const void* const key[]);
+
  private:  // our internal types ==============================================
 
   // Region comparator for sorting with STL
@@ -295,6 +315,21 @@ class MemoryRegionMap {
   // Total size of all unmapped pages so far
   static int64 unmap_size_;
 
+  // Bucket hash table.
+  static Bucket** bucket_table_;
+  static int num_buckets_;
+
+  // Number of unprocessed bucket inserts.
+  static int saved_buckets_count_;
+
+  // Unprocessed inserts (must be big enough to hold all mmaps that can be
+  // caused by a GetBucket call).
+  // Bucket has no constructor, so that c-tor execution does not interfere
+  // with the any-time use of the static memory behind saved_buckets.
+  static Bucket saved_buckets_[20];
+
+  static const void* saved_buckets_keys_[20][kMaxStackDepth];
+
   // helpers ==================================================================
 
   // Helper for FindRegion and FindAndMarkStackRegion:
@@ -308,6 +343,10 @@ class MemoryRegionMap {
   // by calling insert_func on them.
   inline static void HandleSavedRegionsLocked(
                        void (*insert_func)(const Region& region));
+
+  // Handle buckets saved by GetBucket into a tmp static array.
+  inline static void HandleSavedBucketsLocked();
+
   // Wrapper around DoInsertRegionLocked
   // that handles the case of recursive allocator calls.
   inline static void InsertRegionLocked(const Region& region);
@@ -318,6 +357,11 @@ class MemoryRegionMap {
   // Record deletion of a memory region at address "start" of size "size"
   // (called from our munmap/mremap/sbrk hooks).
   static void RecordRegionRemoval(const void* start, size_t size);
+
+  // Record deletion of a memory region in a bucket.
+  static void RecordRegionRemovalInBucket(int depth,
+                                          const void* const key[],
+                                          size_t size);
 
   // Hooks for MallocHook
   static void MmapHook(const void* result,
@@ -336,5 +380,15 @@ class MemoryRegionMap {
 
   DISALLOW_COPY_AND_ASSIGN(MemoryRegionMap);
 };
+
+template <class Type>
+void MemoryRegionMap::IterateBuckets(
+    void (*callback)(const Bucket*, Type), Type arg) {
+  for (int b = 0; b < kHashTableSize; b++) {
+    for (Bucket* x = bucket_table_[b]; x != NULL; x = x->next) {
+      callback(x, arg);
+    }
+  }
+}
 
 #endif  // BASE_MEMORY_REGION_MAP_H_
