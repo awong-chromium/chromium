@@ -529,8 +529,8 @@ class ChromeEndureBaseTest(perf.BasePerfTest):
     memory_counts = self._remote_inspector_client.GetMemoryObjectCounts()
     proc_info = self._GetProcessInfo(tab_title_substring)
 
-    if self._dmprof:
-      self._dmprof.StartProfiler(proc_info, is_last)
+    #if self._dmprof:
+    #  self._dmprof.StartProfiler(proc_info, is_last)
 
     # DOM node count.
     dom_node_count = memory_counts['DOMNodeCount']
@@ -576,9 +576,9 @@ class ChromeEndureBaseTest(perf.BasePerfTest):
         graph_name='%s%s-V8MemAllocated' % (webapp_name, test_description),
         units_x='seconds')
 
-    if self._dmprof:
-      self._dmprof.ParseResultAndOutputPerfGraphValues(
-          webapp_name, test_description, self._OutputPerfGraphValue)
+    #if self._dmprof:
+    #  self._dmprof.ParseResultAndOutputPerfGraphValues(
+    #      webapp_name, test_description, self._OutputPerfGraphValue)
 
     logging.info('  Total DOM node count: %d nodes' % dom_node_count)
     logging.info('  Event listener count: %d listeners' % event_listener_count)
