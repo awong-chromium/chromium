@@ -63,6 +63,7 @@
 #include "symbolize.h"
 #include <gperftools/stacktrace.h>
 #include <gperftools/malloc_hook.h>
+#include "memory_region_map.h"
 #include "base/commandlineflags.h"
 #include "base/logging.h"    // for the RawFD I/O commands
 #include "base/sysinfo.h"
@@ -124,13 +125,17 @@ static bool ByAllocatedSpace(HeapProfileTable::Stats* a,
 //----------------------------------------------------------------------
 
 HeapProfileTable::HeapProfileTable(Allocator alloc, DeAllocator dealloc)
-    : alloc_(alloc), dealloc_(dealloc) {
+    : alloc_(alloc),
+      dealloc_(dealloc),
+      bucket_table_(NULL),
+      num_buckets_(0),
+      address_map_(NULL) {
   // Make the table
-  const int table_bytes = kHashTableSize * sizeof(*table_);
-  table_ = reinterpret_cast<Bucket**>(alloc_(table_bytes));
-  memset(table_, 0, table_bytes);
+  const int table_bytes = kHashTableSize * sizeof(*bucket_table_);
+  bucket_table_ = reinterpret_cast<Bucket**>(alloc_(table_bytes));
+  memset(bucket_table_, 0, table_bytes);
   // Make allocation map
-  alloc_address_map_ =
+  address_map_ =
     new(alloc_(sizeof(AllocationMap))) AllocationMap(alloc_, dealloc_);
   // init the rest:
   memset(&total_, 0, sizeof(total_));
@@ -139,20 +144,20 @@ HeapProfileTable::HeapProfileTable(Allocator alloc, DeAllocator dealloc)
 
 HeapProfileTable::~HeapProfileTable() {
   // free allocation map
-  alloc_address_map_->~AllocationMap();
-  dealloc_(alloc_address_map_);
-  alloc_address_map_ = NULL;
+  address_map_->~AllocationMap();
+  dealloc_(address_map_);
+  address_map_ = NULL;
   // free hash table
   for (int b = 0; b < kHashTableSize; b++) {
-    for (Bucket* x = table_[b]; x != 0; /**/) {
+    for (Bucket* x = bucket_table_[b]; x != 0; /**/) {
       Bucket* b = x;
       x = x->next;
       dealloc_(b->stack);
       dealloc_(b);
     }
   }
-  dealloc_(table_);
-  table_ = NULL;
+  dealloc_(bucket_table_);
+  bucket_table_ = NULL;
 }
 
 HeapProfileTable::Bucket* HeapProfileTable::GetBucket(int depth,
@@ -169,7 +174,7 @@ HeapProfileTable::Bucket* HeapProfileTable::GetBucket(int depth,
 
   // Lookup stack trace in table
   unsigned int buck = ((unsigned int) h) % kHashTableSize;
-  for (Bucket* b = table_[buck]; b != 0; b = b->next) {
+  for (Bucket* b = bucket_table_[buck]; b != 0; b = b->next) {
     if ((b->hash == h) &&
         (b->depth == depth) &&
         equal(key, key + depth, b->stack)) {
@@ -186,8 +191,8 @@ HeapProfileTable::Bucket* HeapProfileTable::GetBucket(int depth,
   b->hash  = h;
   b->depth = depth;
   b->stack = kcopy;
-  b->next  = table_[buck];
-  table_[buck] = b;
+  b->next  = bucket_table_[buck];
+  bucket_table_[buck] = b;
   num_buckets_++;
   return b;
 }
@@ -210,12 +215,12 @@ void HeapProfileTable::RecordAlloc(
   AllocValue v;
   v.set_bucket(b);  // also did set_live(false); set_ignore(false)
   v.bytes = bytes;
-  alloc_address_map_->Insert(ptr, v);
+  address_map_->Insert(ptr, v);
 }
 
 void HeapProfileTable::RecordFree(const void* ptr) {
   AllocValue v;
-  if (alloc_address_map_->FindAndRemove(ptr, &v)) {
+  if (address_map_->FindAndRemove(ptr, &v)) {
     Bucket* b = v.bucket();
     b->frees++;
     b->free_size += v.bytes;
@@ -225,14 +230,14 @@ void HeapProfileTable::RecordFree(const void* ptr) {
 }
 
 bool HeapProfileTable::FindAlloc(const void* ptr, size_t* object_size) const {
-  const AllocValue* alloc_value = alloc_address_map_->Find(ptr);
+  const AllocValue* alloc_value = address_map_->Find(ptr);
   if (alloc_value != NULL) *object_size = alloc_value->bytes;
   return alloc_value != NULL;
 }
 
 bool HeapProfileTable::FindAllocDetails(const void* ptr,
                                         AllocInfo* info) const {
-  const AllocValue* alloc_value = alloc_address_map_->Find(ptr);
+  const AllocValue* alloc_value = address_map_->Find(ptr);
   if (alloc_value != NULL) {
     info->object_size = alloc_value->bytes;
     info->call_stack = alloc_value->bucket()->stack;
@@ -246,13 +251,13 @@ bool HeapProfileTable::FindInsideAlloc(const void* ptr,
                                        const void** object_ptr,
                                        size_t* object_size) const {
   const AllocValue* alloc_value =
-    alloc_address_map_->FindInside(&AllocValueSize, max_size, ptr, object_ptr);
+    address_map_->FindInside(&AllocValueSize, max_size, ptr, object_ptr);
   if (alloc_value != NULL) *object_size = alloc_value->bytes;
   return alloc_value != NULL;
 }
 
 bool HeapProfileTable::MarkAsLive(const void* ptr) {
-  AllocValue* alloc = alloc_address_map_->FindMutable(ptr);
+  AllocValue* alloc = address_map_->FindMutable(ptr);
   if (alloc && !alloc->live()) {
     alloc->set_live(true);
     return true;
@@ -261,7 +266,7 @@ bool HeapProfileTable::MarkAsLive(const void* ptr) {
 }
 
 void HeapProfileTable::MarkAsIgnored(const void* ptr) {
-  AllocValue* alloc = alloc_address_map_->FindMutable(ptr);
+  AllocValue* alloc = address_map_->FindMutable(ptr);
   if (alloc) {
     alloc->set_ignore(true);
   }
@@ -270,18 +275,18 @@ void HeapProfileTable::MarkAsIgnored(const void* ptr) {
 void HeapProfileTable::IterateAllocationAddresses(AddressIterator f,
                                                   void* data) {
   const AllocationAddressIteratorArgs args(f, data);
-  alloc_address_map_->Iterate<const AllocationAddressIteratorArgs&>(
+  address_map_->Iterate<const AllocationAddressIteratorArgs&>(
       AllocationAddressesIterator, args);
 }
 
 void HeapProfileTable::MarkCurrentAllocations(AllocationMark mark) {
   const MarkArgs args(mark, true);
-  alloc_address_map_->Iterate<const MarkArgs&>(MarkIterator, args);
+  address_map_->Iterate<const MarkArgs&>(MarkIterator, args);
 }
 
 void HeapProfileTable::MarkUnmarkedAllocations(AllocationMark mark) {
   const MarkArgs args(mark, true);
-  alloc_address_map_->Iterate<const MarkArgs&>(MarkIterator, args);
+  address_map_->Iterate<const MarkArgs&>(MarkIterator, args);
 }
 
 // We'd be happier using snprintfer, but we don't to reduce dependencies.
@@ -324,7 +329,7 @@ HeapProfileTable::MakeSortedBucketList() const {
 
   int n = 0;
   for (int b = 0; b < kHashTableSize; b++) {
-    for (Bucket* x = table_[b]; x != 0; x = x->next) {
+    for (Bucket* x = bucket_table_[b]; x != 0; x = x->next) {
       list[n++] = x;
     }
   }
@@ -343,7 +348,7 @@ void HeapProfileTable::DumpMarkedObjects(AllocationMark mark,
     return;
   }
   const DumpMarkedArgs args(fd, mark);
-  alloc_address_map_->Iterate<const DumpMarkedArgs&>(DumpMarkedIterator, args);
+  address_map_->Iterate<const DumpMarkedArgs&>(DumpMarkedIterator, args);
   RawClose(fd);
 }
 
@@ -358,7 +363,7 @@ void HeapProfileTable::DumpTypeStatistics(const char* file_name) const {
   AddressMap<TypeCount>* type_size_map;
   type_size_map = new(alloc_(sizeof(AddressMap<TypeCount>)))
       AddressMap<TypeCount>(alloc_, dealloc_);
-  alloc_address_map_->Iterate(TallyTypesItererator, type_size_map);
+  address_map_->Iterate(TallyTypesItererator, type_size_map);
 
   RawWrite(fd, kTypeProfileStatsHeader, strlen(kTypeProfileStatsHeader));
   const DumpArgs args(fd, NULL);
@@ -384,6 +389,7 @@ void HeapProfileTable::IterateOrderedAllocContexts(
 }
 
 int HeapProfileTable::FillOrderedProfile(char buf[], int size) const {
+  // TODO(dmikurube): Make another list for mmap?
   Bucket** list = MakeSortedBucketList();
 
   // Our file format is "bucket, bucket, ..., bucket, proc_self_maps_info".
@@ -406,8 +412,10 @@ int HeapProfileTable::FillOrderedProfile(char buf[], int size) const {
   memset(&stats, 0, sizeof(stats));
   int bucket_length = snprintf(buf, size, "%s", kProfileHeader);
   if (bucket_length < 0 || bucket_length >= size) return 0;
+  // TODO(dmikurube): Add mmap total and stats here for total_.
   bucket_length = UnparseBucket(total_, buf, bucket_length, size,
                                 " heapprofile", &stats);
+  // TODO(dmikurube): Iterate for another list for mmap?
   for (int i = 0; i < num_buckets_; i++) {
     bucket_length = UnparseBucket(*list[i], buf, bucket_length, size, "",
                                   &stats);
@@ -532,22 +540,21 @@ bool HeapProfileTable::WriteProfile(const char* file_name,
                                     AllocationMap* allocations) {
   RAW_VLOG(1, "Dumping non-live heap profile to %s", file_name);
   RawFD fd = RawOpenForWriting(file_name);
-  if (fd != kIllegalRawFD) {
-    RawWrite(fd, kProfileHeader, strlen(kProfileHeader));
-    char buf[512];
-    int len = UnparseBucket(total, buf, 0, sizeof(buf), " heapprofile",
-                            NULL);
-    RawWrite(fd, buf, len);
-    const DumpArgs args(fd, NULL);
-    allocations->Iterate<const DumpArgs&>(DumpNonLiveIterator, args);
-    RawWrite(fd, kProcSelfMapsHeader, strlen(kProcSelfMapsHeader));
-    DumpProcSelfMaps(fd);
-    RawClose(fd);
-    return true;
-  } else {
+  if (fd == kIllegalRawFD) {
     RAW_LOG(ERROR, "Failed dumping filtered heap profile to %s", file_name);
     return false;
   }
+  RawWrite(fd, kProfileHeader, strlen(kProfileHeader));
+  char buf[512];
+  int len = UnparseBucket(total, buf, 0, sizeof(buf), " heapprofile",
+                          NULL);
+  RawWrite(fd, buf, len);
+  const DumpArgs args(fd, NULL);
+  allocations->Iterate<const DumpArgs&>(DumpNonLiveIterator, args);
+  RawWrite(fd, kProcSelfMapsHeader, strlen(kProcSelfMapsHeader));
+  DumpProcSelfMaps(fd);
+  RawClose(fd);
+  return true;
 }
 
 void HeapProfileTable::CleanupOldProfiles(const char* prefix) {
@@ -579,7 +586,7 @@ void HeapProfileTable::CleanupOldProfiles(const char* prefix) {
 
 HeapProfileTable::Snapshot* HeapProfileTable::TakeSnapshot() {
   Snapshot* s = new (alloc_(sizeof(Snapshot))) Snapshot(alloc_, dealloc_);
-  alloc_address_map_->Iterate(AddToSnapshot, s);
+  address_map_->Iterate(AddToSnapshot, s);
   return s;
 }
 
@@ -604,7 +611,7 @@ HeapProfileTable::Snapshot* HeapProfileTable::NonLiveSnapshot(
   AddNonLiveArgs args;
   args.dest = s;
   args.base = base;
-  alloc_address_map_->Iterate<AddNonLiveArgs*>(AddIfNonLive, &args);
+  address_map_->Iterate<AddNonLiveArgs*>(AddIfNonLive, &args);
   RAW_VLOG(2, "NonLiveSnapshot output: %d %d\n",
            int(s->total_.allocs - s->total_.frees),
            int(s->total_.alloc_size - s->total_.free_size));
