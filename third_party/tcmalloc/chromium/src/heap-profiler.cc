@@ -217,7 +217,6 @@ static void AddRemoveMMapDataLocked(AddOrRemove mode) {
   }
 }
 
-
 // Input must be a buffer of size at least 1MB.
 static char* DoGetHeapProfileLocked(char* buf, int buflen) {
   // We used to be smarter about estimating the required memory and
