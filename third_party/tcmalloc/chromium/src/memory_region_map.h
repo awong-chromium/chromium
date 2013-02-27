@@ -93,7 +93,7 @@ class MemoryRegionMap {
   // and initialize arena_ and our hook and locks, hence one can use
   // MemoryRegionMap::Lock()/Unlock() to manage the locks.
   // Uses Lock/Unlock inside.
-  static void Init(int max_stack_depth);
+  static void Init(int max_stack_depth, bool use_buckets);
 
   // Try to shutdown this module undoing what Init() did.
   // Returns true iff could do full shutdown (or it was not attempted).
@@ -123,8 +123,8 @@ class MemoryRegionMap {
   // Profile stats.
   struct Stats {
     int32 mmaps;       // Number of mmap calls
-    int32 munmaps      // Number of munmap calls
-    int64 map_size;    // Total size of all mmapped regions so far
+    int32 munmaps;     // Number of munmap calls
+    int64 mmap_size;   // Total size of all mmapped regions so far
     int64 munmap_size; // Total size of all munmapped regions so far
 
     // semantic equality

@@ -37,7 +37,7 @@
 #endif
 
 #if defined(__linux__)
-#define DEEP_HEAP_PROFILE 1
+//#define DEEP_HEAP_PROFILE 1
 #endif
 
 #include "addressmap-inl.h"

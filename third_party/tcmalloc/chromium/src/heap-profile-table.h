@@ -168,7 +168,7 @@ class HeapProfileTable {
   // Iterate over the allocation profile data calling "callback"
   // for every allocation.
   void IterateAllocs(AllocIterator callback) const {
-    alloc_address_map_->Iterate(MapArgsAllocIterator, callback);
+    address_map_->Iterate(MapArgsAllocIterator, callback);
   }
 
   // Callback for iterating through addresses of all allocated objects. Accepts
@@ -450,7 +450,7 @@ class HeapProfileTable {
   int num_buckets_;
 
   // Map of all currently allocated objects and mapped regions we know about.
-  AllocationMap* alloc_address_map_;
+  AllocationMap* address_map_;
 
   DISALLOW_COPY_AND_ASSIGN(HeapProfileTable);
 };

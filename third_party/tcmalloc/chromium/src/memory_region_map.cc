@@ -147,7 +147,7 @@ int MemoryRegionMap::recursion_count_ = 0;  // GUARDED_BY(owner_lock_)
 pthread_t MemoryRegionMap::lock_owner_tid_;  // GUARDED_BY(owner_lock_)
 int64 MemoryRegionMap::map_size_ = 0;
 int64 MemoryRegionMap::unmap_size_ = 0;
-Bucket** MemoryRegionMap::bucket_table_ = NULL;
+MemoryRegionMap::Bucket** MemoryRegionMap::bucket_table_ = NULL;
 int MemoryRegionMap::num_buckets_ = 0;
 
 // ========================================================================= //
@@ -235,11 +235,11 @@ bool MemoryRegionMap::Shutdown() {
       for (Bucket* x = bucket_table_[i]; x != 0; /**/) {
         Bucket* b = x;
         x = x->next;
-        MyAllocator::Free(b->stack);
-        MyAllocator::Free(b);
+        MyAllocator::Free(b->stack, 0);
+        MyAllocator::Free(b, 0);
       }
     }
-    MyAllocator::Free(bucket_table_);
+    MyAllocator::Free(bucket_table_, 0);
     num_buckets_ = 0;
     bucket_table_ = NULL;
   }
@@ -284,7 +284,7 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
   for (Bucket* b = bucket_table_[buck]; b != 0; b = b->next) {
     if ((b->hash == h) &&
         (b->depth == depth) &&
-        equal(key, key + depth, b->stack)) {
+        std::equal(key, key + depth, b->stack)) {
       return b;
     }
   }
@@ -293,7 +293,7 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
   const size_t key_size = sizeof(key[0]) * depth;
   const void** kcopy = reinterpret_cast<const void**>(
       MyAllocator::Allocate(key_size));
-  copy(key, key + depth, kcopy);
+  std::copy(key, key + depth, kcopy);
   Bucket* b = reinterpret_cast<Bucket*>(MyAllocator::Allocate(sizeof(Bucket)));
   memset(b, 0, sizeof(*b));
   b->hash  = h;
@@ -602,9 +602,9 @@ void MemoryRegionMap::RecordRegionRemoval(const void* start, size_t size) {
                   reinterpret_cast<void*>(region->start_addr),
                   reinterpret_cast<void*>(region->end_addr));
       if (bucket_table_ != NULL) {
-        Bucket* b = GetBucket(region.call_stack_depth, region.call_stack);
+        Bucket* b = GetBucket(region->call_stack_depth, region->call_stack);
         ++b->munmaps;
-        b->munmap_size += (region.end_addr - region.start_addr);
+        b->munmap_size += (region->end_addr - region->start_addr);
       }
       RegionSet::iterator d = region;
       ++region;
@@ -616,7 +616,7 @@ void MemoryRegionMap::RecordRegionRemoval(const void* start, size_t size) {
                   reinterpret_cast<void*>(region->start_addr),
                   reinterpret_cast<void*>(region->end_addr));
       if (bucket_table_ != NULL) {
-        Bucket* b = GetBucket(region.call_stack_depth, region.call_stack);
+        Bucket* b = GetBucket(region->call_stack_depth, region->call_stack);
         ++b->munmaps;
         b->munmap_size += (end_addr - start_addr);
       }
@@ -634,9 +634,9 @@ void MemoryRegionMap::RecordRegionRemoval(const void* start, size_t size) {
                   reinterpret_cast<void*>(region->start_addr),
                   reinterpret_cast<void*>(region->end_addr));
       if (bucket_table_ != NULL) {
-        Bucket* b = GetBucket(region.call_stack_depth, region.call_stack);
+        Bucket* b = GetBucket(region->call_stack_depth, region->call_stack);
         ++b->munmaps;
-        b->munmap_size += (end_addr - region.start_addr);
+        b->munmap_size += (end_addr - region->start_addr);
       }
       const_cast<Region&>(*region).set_start_addr(end_addr);
     } else if (start_addr > region->start_addr  &&
@@ -645,9 +645,9 @@ void MemoryRegionMap::RecordRegionRemoval(const void* start, size_t size) {
                   reinterpret_cast<void*>(region->start_addr),
                   reinterpret_cast<void*>(region->end_addr));
       if (bucket_table_ != NULL) {
-        Bucket* b = GetBucket(region.call_stack_depth, region.call_stack);
+        Bucket* b = GetBucket(region->call_stack_depth, region->call_stack);
         ++b->munmaps;
-        b->munmap_size += (region.end_addr - start_addr);
+        b->munmap_size += (region->end_addr - start_addr);
       }
       // Can't just modify region->end_addr (it's the sorting key):
       Region r = *region;
