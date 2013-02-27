@@ -446,19 +446,11 @@ class HeapProfileTable {
   // We hand-craft one instead of using one of the pre-written
   // ones because we do not want to use malloc when operating on the table.
   // It is only few lines of code, so no big deal.
-
   Bucket** alloc_table_;
   int num_alloc_buckets_;
 
-  // Bucket hash table for mmap.
-  // This table is filled with the information from MemoryRegionMap by calling
-  // RefreshMMapData.
-  Bucket** mmap_table_;
-  int num_available_mmap_buckets_;
-
   // Map of all currently allocated objects and mapped regions we know about.
   AllocationMap* alloc_address_map_;
-  AllocationMap* mmap_address_map_;
 
   DISALLOW_COPY_AND_ASSIGN(HeapProfileTable);
 };

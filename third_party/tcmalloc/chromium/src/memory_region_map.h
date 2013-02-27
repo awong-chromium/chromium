@@ -72,6 +72,8 @@ class MemoryRegionMap {
   // don't take the address of it!
   static const int kMaxStackDepth = 32;
 
+  static const int kHashTableSize = 179999;
+
  public:
   // interface ================================================================
 
@@ -116,6 +118,20 @@ class MemoryRegionMap {
     ~LockHolder() { Unlock(); }
    private:
     DISALLOW_COPY_AND_ASSIGN(LockHolder);
+  };
+
+  // Profile stats.
+  struct Stats {
+    int32 mmaps;       // Number of mmap calls
+    int32 munmaps      // Number of munmap calls
+    int64 map_size;    // Total size of all mmapped regions so far
+    int64 munmap_size; // Total size of all munmapped regions so far
+
+    // semantic equality
+    bool Equivalent(const Stats& x) const {
+      return mmaps - munmaps == x.mmaps - x.munmaps  &&
+             mmap_size - munmap_size == x.mmap_size - x.munmap_size;
+    }
   };
 
   // A memory region that we know about through malloc_hook-s.
@@ -216,6 +232,15 @@ class MemoryRegionMap {
 
  private:  // our internal types ==============================================
 
+  // Hash table bucket to hold m(un)map stats
+  // for a given mmap call stack trace.
+  struct Bucket : public Stats {
+    uintptr_t    hash;   // Hash value of the stack trace
+    int          depth;  // Depth of stack trace
+    const void** stack;  // Stack trace
+    Bucket*      next;   // Next entry in hash-table
+  };
+
   // Region comparator for sorting with STL
   struct RegionCmp {
     bool operator()(const Region& x, const Region& y) const {
@@ -295,7 +320,13 @@ class MemoryRegionMap {
   // Total size of all unmapped pages so far
   static int64 unmap_size_;
 
+  // Bucket hash table.
+  static Bucket** bucket_table_;
+  static int num_buckets_;
+
   // helpers ==================================================================
+
+  static Bucket* GetBucket(int depth, const void* const key[]);
 
   // Helper for FindRegion and FindAndMarkStackRegion:
   // returns the region covering 'addr' or NULL; assumes our lock_ is held.
