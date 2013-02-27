@@ -217,10 +217,14 @@ void MemoryRegionMap::Init(int max_stack_depth, bool use_buckets) {
     // recursive_insert = false; as InsertRegionLocked will also construct
     // regions_ on demand for us.
   if (use_buckets) {
+    RAW_LOG(WARNING, "UHYOOO");
     const int table_bytes = kHashTableSize * sizeof(*bucket_table_);
+    RAW_LOG(WARNING, "URYYYY");
     bucket_table_ = reinterpret_cast<Bucket**>(
         MyAllocator::Allocate(table_bytes));
+    RAW_LOG(WARNING, "UKYAAAA");
     memset(bucket_table_, 0, table_bytes);
+    RAW_LOG(WARNING, "GOOOOOO");
     num_buckets_ = 0;
   }
   Unlock();
@@ -291,10 +295,13 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
 
   // Create new bucket
   const size_t key_size = sizeof(key[0]) * depth;
+  RAW_LOG(WARNING, "*******");
   const void** kcopy = reinterpret_cast<const void**>(
       MyAllocator::Allocate(key_size));
+  RAW_LOG(WARNING, "#######");
   std::copy(key, key + depth, kcopy);
   Bucket* b = reinterpret_cast<Bucket*>(MyAllocator::Allocate(sizeof(Bucket)));
+  RAW_LOG(WARNING, "$$$$$$$");
   memset(b, 0, sizeof(*b));
   b->hash  = h;
   b->depth = depth;
@@ -508,6 +515,7 @@ static const int kStripFrames = 3;
 #endif
 
 void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
+  RAW_LOG(WARNING, "ADDDDDD");
   // Record start/end info about this memory acquisition call in a new region:
   Region region;
   region.Create(start, size);
@@ -517,6 +525,7 @@ void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
     ? MallocHook::GetCallerStackTrace(const_cast<void**>(region.call_stack),
                                       max_stack_depth_, kStripFrames + 1)
     : 0;
+  RAW_LOG(WARNING, "111111");
   region.set_call_stack_depth(depth);  // record stack info fully
   RAW_VLOG(10, "New global region %p..%p from %p",
               reinterpret_cast<void*>(region.start_addr),
@@ -524,16 +533,21 @@ void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
               reinterpret_cast<void*>(region.caller()));
   // Note: none of the above allocates memory.
   Lock();  // recursively lock
+  RAW_LOG(WARNING, "222222");
   map_size_ += size;
   InsertRegionLocked(region);
     // This will (eventually) allocate storage for and copy over the stack data
     // from region.call_stack_data_ that is pointed by region.call_stack().
+  RAW_LOG(WARNING, "333333");
   if (bucket_table_ != NULL) {
+    RAW_LOG(WARNING, "444444");
     Bucket* b = GetBucket(depth, region.call_stack);
+    RAW_LOG(WARNING, "555555");
     ++b->mmaps;
     b->mmap_size += size;
   }
   Unlock();
+  RAW_LOG(WARNING, "DELLLLL");
 }
 
 void MemoryRegionMap::RecordRegionRemoval(const void* start, size_t size) {
