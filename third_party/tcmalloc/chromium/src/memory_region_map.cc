@@ -444,7 +444,8 @@ inline void MemoryRegionMap::HandleSavedRegionsLocked(
 inline void MemoryRegionMap::HandleSavedBucketsLocked(
                                                       ) {
   while (saved_buckets_count > 0) {
-    Bucket /*****/;
+    Bucket b = saved_buckets[--saved_buckets_count];
+    
   }
 }
 
@@ -473,16 +474,26 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
   // Create new bucket
   const size_t key_size = sizeof(key[0]) * depth;
   RAW_LOG(WARNING, "*******");
-  const void** kcopy = reinterpret_cast<const void**>(
-      MyAllocator::Allocate(key_size));
-  RAW_LOG(WARNING, "#######");
-  std::copy(key, key + depth, kcopy);
-  Bucket* b = reinterpret_cast<Bucket*>(MyAllocator::Allocate(sizeof(Bucket)));
+  Bucket* b;
+  if (recursive_insert) {  // recursion: save in saved_regions
+    const void** kcopy = saved_buckets_key[saved_buckets_count];
+    std::copy(key, key + depth, kcopy);
+    b = saved_buckets[saved_buckets_count];
+    memset(b, 0, sizeof(*b));
+    ++saved_buckets_count;
+    b->stack = kcopy;
+  } else {
+    const void** kcopy = reinterpret_cast<const void**>(
+        MyAllocator::Allocate(key_size));
+    std::copy(key, key + depth, kcopy);
+    b = reinterpret_cast<Bucket*>(
+        MyAllocator::Allocate(sizeof(Bucket)));
+    memset(b, 0, sizeof(*b));
+    b->stack = kcopy;
+  }
   RAW_LOG(WARNING, "$$$$$$$");
-  memset(b, 0, sizeof(*b));
   b->hash  = h;
   b->depth = depth;
-  b->stack = kcopy;
   b->next  = bucket_table_[buck];
   bucket_table_[buck] = b;
   ++num_buckets_;
