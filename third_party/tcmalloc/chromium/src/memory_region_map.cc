@@ -271,47 +271,6 @@ bool MemoryRegionMap::Shutdown() {
   return deleted_arena;
 }
 
-MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
-                                                    const void* const key[]) {
-  // Make hash-value
-  uintptr_t h = 0;
-  for (int i = 0; i < depth; i++) {
-    h += reinterpret_cast<uintptr_t>(key[i]);
-    h += h << 10;
-    h ^= h >> 6;
-  }
-  h += h << 3;
-  h ^= h >> 11;
-
-  // Lookup stack trace in table
-  unsigned int buck = ((unsigned int) h) % kHashTableSize;
-  for (Bucket* b = bucket_table_[buck]; b != 0; b = b->next) {
-    if ((b->hash == h) &&
-        (b->depth == depth) &&
-        std::equal(key, key + depth, b->stack)) {
-      return b;
-    }
-  }
-
-  // Create new bucket
-  const size_t key_size = sizeof(key[0]) * depth;
-  RAW_LOG(WARNING, "*******");
-  const void** kcopy = reinterpret_cast<const void**>(
-      MyAllocator::Allocate(key_size));
-  RAW_LOG(WARNING, "#######");
-  std::copy(key, key + depth, kcopy);
-  Bucket* b = reinterpret_cast<Bucket*>(MyAllocator::Allocate(sizeof(Bucket)));
-  RAW_LOG(WARNING, "$$$$$$$");
-  memset(b, 0, sizeof(*b));
-  b->hash  = h;
-  b->depth = depth;
-  b->stack = kcopy;
-  b->next  = bucket_table_[buck];
-  bucket_table_[buck] = b;
-  ++num_buckets_;
-  return b;
-}
-
 // Invariants (once libpthread_initialized is true):
 //   * While lock_ is not held, recursion_count_ is 0 (and
 //     lock_owner_tid_ is the previous owner, but we don't rely on
@@ -459,6 +418,17 @@ static int saved_regions_count = 0;
 // with the any-time use of the static memory behind saved_regions.
 static MemoryRegionMap::Region saved_regions[20];
 
+// Number of unprocessed bucket inserts.
+static int saved_buckets_count = 0;
+
+// Unprocessed inserts (must be big enough to hold all mmaps that can be
+// caused by a GetBucket call).
+// Region has no constructor, so that c-tor execution does not interfere
+// with the any-time use of the static memory behind saved_regions.
+static MemoryRegionMap::Bucket saved_buckets[20];
+
+static const void* saved_buckets_keys[20][MemoryRegionMap::kMaxStackDepth];
+
 inline void MemoryRegionMap::HandleSavedRegionsLocked(
               void (*insert_func)(const Region& region)) {
   while (saved_regions_count > 0) {
@@ -469,6 +439,54 @@ inline void MemoryRegionMap::HandleSavedRegionsLocked(
     Region r = saved_regions[--saved_regions_count];
     (*insert_func)(r);
   }
+}
+
+inline void MemoryRegionMap::HandleSavedBucketsLocked(
+                                                      ) {
+  while (saved_buckets_count > 0) {
+    Bucket /*****/;
+  }
+}
+
+MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
+                                                    const void* const key[]) {
+  // Make hash-value
+  uintptr_t h = 0;
+  for (int i = 0; i < depth; i++) {
+    h += reinterpret_cast<uintptr_t>(key[i]);
+    h += h << 10;
+    h ^= h >> 6;
+  }
+  h += h << 3;
+  h ^= h >> 11;
+
+  // Lookup stack trace in table
+  unsigned int buck = ((unsigned int) h) % kHashTableSize;
+  for (Bucket* b = bucket_table_[buck]; b != 0; b = b->next) {
+    if ((b->hash == h) &&
+        (b->depth == depth) &&
+        std::equal(key, key + depth, b->stack)) {
+      return b;
+    }
+  }
+
+  // Create new bucket
+  const size_t key_size = sizeof(key[0]) * depth;
+  RAW_LOG(WARNING, "*******");
+  const void** kcopy = reinterpret_cast<const void**>(
+      MyAllocator::Allocate(key_size));
+  RAW_LOG(WARNING, "#######");
+  std::copy(key, key + depth, kcopy);
+  Bucket* b = reinterpret_cast<Bucket*>(MyAllocator::Allocate(sizeof(Bucket)));
+  RAW_LOG(WARNING, "$$$$$$$");
+  memset(b, 0, sizeof(*b));
+  b->hash  = h;
+  b->depth = depth;
+  b->stack = kcopy;
+  b->next  = bucket_table_[buck];
+  bucket_table_[buck] = b;
+  ++num_buckets_;
+  return b;
 }
 
 inline void MemoryRegionMap::InsertRegionLocked(const Region& region) {
