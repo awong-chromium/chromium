@@ -441,8 +441,7 @@ inline void MemoryRegionMap::HandleSavedRegionsLocked(
   }
 }
 
-inline void MemoryRegionMap::HandleSavedBucketsLocked(
-                                                      ) {
+inline void MemoryRegionMap::HandleSavedBucketsLocked() {
   while (saved_buckets_count > 0) {
     Bucket b = saved_buckets[--saved_buckets_count];
     uintptr_t h = b.hash;
@@ -470,7 +469,12 @@ inline void MemoryRegionMap::HandleSavedBucketsLocked(
     new_b = reinterpret_cast<Bucket*>(
         MyAllocator::Allocate(sizeof(Bucket)));
     memset(new_b, 0, sizeof(*new_b));
+    new_b->hash = b.hash;
+    new_b->depth = b.depth;
     new_b->stack = kcopy;
+    new_b->next = bucket_table_[buck];
+    bucket_table_[buck] = new_b;
+    ++num_buckets_;
   }
 }
 
@@ -507,6 +511,7 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
     memset(b, 0, sizeof(*b));
     ++saved_buckets_count;
     b->stack = kcopy;
+    b->next  = NULL;
   } else {
     const void** kcopy = reinterpret_cast<const void**>(
         MyAllocator::Allocate(key_size));
@@ -515,11 +520,11 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
         MyAllocator::Allocate(sizeof(Bucket)));
     memset(b, 0, sizeof(*b));
     b->stack = kcopy;
+    b->next  = bucket_table_[buck];
   }
   RAW_LOG(WARNING, "$$$$$$$");
   b->hash  = h;
   b->depth = depth;
-  b->next  = bucket_table_[buck];
   bucket_table_[buck] = b;
   ++num_buckets_;
   return b;
@@ -595,7 +600,10 @@ void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
   RAW_LOG(WARNING, "333333");
   if (bucket_table_ != NULL) {
     RAW_LOG(WARNING, "444444");
+    recursive_insert = true;
     Bucket* b = GetBucket(depth, region.call_stack);
+    HandleSavedBucketsLocked();
+    recursive_insert = false;
     RAW_LOG(WARNING, "555555");
     ++b->mmaps;
     b->mmap_size += size;
