@@ -220,8 +220,10 @@ void MemoryRegionMap::Init(int max_stack_depth, bool use_buckets) {
     RAW_LOG(WARNING, "UHYOOO");
     const int table_bytes = kHashTableSize * sizeof(*bucket_table_);
     RAW_LOG(WARNING, "URYYYY");
+    recursive_insert = true;
     bucket_table_ = reinterpret_cast<Bucket**>(
         MyAllocator::Allocate(table_bytes));
+    recursive_insert = false;
     RAW_LOG(WARNING, "UKYAAAA");
     memset(bucket_table_, 0, table_bytes);
     RAW_LOG(WARNING, "GOOOOOO");
@@ -513,11 +515,15 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
     b->stack = kcopy;
     b->next  = NULL;
   } else {
+    recursive_insert = true;
     const void** kcopy = reinterpret_cast<const void**>(
         MyAllocator::Allocate(key_size));
+    recursive_insert = false;
     std::copy(key, key + depth, kcopy);
+    recursive_insert = true;
     b = reinterpret_cast<Bucket*>(
         MyAllocator::Allocate(sizeof(Bucket)));
+    recursive_insert = false;
     memset(b, 0, sizeof(*b));
     b->stack = kcopy;
     b->next  = bucket_table_[buck];
@@ -600,10 +606,10 @@ void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
   RAW_LOG(WARNING, "333333");
   if (bucket_table_ != NULL) {
     RAW_LOG(WARNING, "444444");
-    recursive_insert = true;
     Bucket* b = GetBucket(depth, region.call_stack);
+    //I'd like to do but...: recursive_insert = true;
     HandleSavedBucketsLocked();
-    recursive_insert = false;
+    //recursive_insert = false
     RAW_LOG(WARNING, "555555");
     ++b->mmaps;
     b->mmap_size += size;
