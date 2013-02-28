@@ -445,7 +445,32 @@ inline void MemoryRegionMap::HandleSavedBucketsLocked(
                                                       ) {
   while (saved_buckets_count > 0) {
     Bucket b = saved_buckets[--saved_buckets_count];
-    
+    uintptr_t h = b.hash;
+    unsigned int buck = ((unsigned int) h) % kHashTableSize;
+    bool is_found = false;
+    for (Bucket* found = bucket_table_[buck]; found != 0; found = found->next) {
+      if ((found->hash == h) &&
+          (found->depth == depth) &&
+          std::equal(key, key + depth, found->stack)) {
+        found->mmaps += b.mmaps;
+        found->mmap_size += b.mmap_size;
+        found->munmaps += b.munmaps;
+        found->munmap_size += b.munmap_size;
+        is_found = true;
+        break;
+      }
+    }
+    if (is_found)
+      continue;
+
+    const size_t key_size = sizeof(b.stack[0]) * b.depth;
+    const void** kcopy = reinterpret_cast<const void**>(
+        MyAllocator::Allocate(key_size));
+    std::copy(b.stack, b.stack + b.depth, kcopy);
+    new_b = reinterpret_cast<Bucket*>(
+        MyAllocator::Allocate(sizeof(Bucket)));
+    memset(new_b, 0, sizeof(*new_b));
+    new_b->stack = kcopy;
   }
 }
 
