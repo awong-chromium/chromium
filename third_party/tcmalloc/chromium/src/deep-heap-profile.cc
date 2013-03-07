@@ -704,6 +704,10 @@ void DeepHeapProfile::GlobalStats::SnapshotMaps(
         }
 
         if (last_address_of_unhooked + 1 > cursor) {
+          RAW_CHECK(cursor >= first_address,
+                    "Wrong calculation for unhooked");
+          RAW_CHECK(last_address_of_unhooked <= last_address,
+                    "Wrong calculation for unhooked");
           uint64 committed_size = unhooked_[type].Record(
               memory_residence_info_getter,
               cursor,
@@ -749,6 +753,34 @@ void DeepHeapProfile::GlobalStats::SnapshotMaps(
     }
   }
   MemoryRegionMap::Unlock();
+
+  // The total committed usage in all_ (from /proc/$PID/maps) is sometimes
+  // smaller than the total committed mmap'ed addresses and unhooked regions
+  // by a page (usually 4KB).  In observed cases, the difference is only in
+  // committed usage, not in reserved virtual addresses.
+  // A guess is that an uncommitted page may get committed while counting
+  // usage above.  It has not be ensured yet.
+  // TODO(dmikurube): Investigate and fix this.
+  // The difference is temporarily accounted as "ABSENT" to record such cases.
+
+  RegionStats all_total;
+  RegionStats unhooked_total;
+  for (int i = 0; i < NUMBER_OF_MAPS_REGION_TYPES; ++i) {
+    all_total.AddAnotherRegionStat(all_[i]);
+    unhooked_total.AddAnotherRegionStat(unhooked_[i]);
+  }
+
+  size_t absent_virtual = profiled_mmap_.virtual_bytes() +
+                          unhooked_total.virtual_bytes() -
+                          all_total.virtual_bytes();
+  if (absent_virtual > 0)
+    all_[ABSENT].AddToVirtualBytes(absent_virtual);
+
+  size_t absent_committed = profiled_mmap_.committed_bytes() +
+                            unhooked_total.committed_bytes() -
+                            all_total.committed_bytes();
+  if (absent_committed > 0)
+    all_[ABSENT].AddToCommittedBytes(absent_committed);
 }
 
 void DeepHeapProfile::GlobalStats::SnapshotAllocations(
@@ -787,6 +819,7 @@ void DeepHeapProfile::GlobalStats::Unparse(TextBuffer* buffer) {
   buffer->AppendString("\n", 0);
 
   all_total.Unparse("total", buffer);
+  all_[ABSENT].Unparse("absent", buffer);
   all_[FILE_EXEC].Unparse("file-exec", buffer);
   all_[FILE_NONEXEC].Unparse("file-nonexec", buffer);
   all_[ANONYMOUS].Unparse("anonymous", buffer);
