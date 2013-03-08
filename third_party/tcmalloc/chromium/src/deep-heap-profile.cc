@@ -607,6 +607,7 @@ void DeepHeapProfile::GlobalStats::SnapshotMaps(
     const MemoryResidenceInfoGetterInterface* memory_residence_info_getter,
     DeepHeapProfile* deep_profile,
     TextBuffer* mmap_dump_buffer) {
+  MemoryRegionMap::LockHolder lock_holder;
   ProcMapsIterator::Buffer procmaps_iter_buffer;
   ProcMapsIterator procmaps_iter(0, &procmaps_iter_buffer);
   uint64 first_address, last_address, offset;
@@ -620,7 +621,6 @@ void DeepHeapProfile::GlobalStats::SnapshotMaps(
   }
   profiled_mmap_.Initialize();
 
-  MemoryRegionMap::Lock();
   MemoryRegionMap::RegionIterator mmap_iter =
       MemoryRegionMap::BeginRegionLocked();
 
@@ -658,7 +658,7 @@ void DeepHeapProfile::GlobalStats::SnapshotMaps(
 
     // TODO(dmikurube): Stop double-counting pagemap.
     // Counts unhooked memory regions in /proc/<pid>/maps.
-    if (MemoryRegionMap::IsWorking()) {
+    if (MemoryRegionMap::IsRecording()) {
       // It assumes that every mmap'ed region is included in one maps line.
       uint64 cursor = first_address;
       bool first = true;
@@ -752,7 +752,6 @@ void DeepHeapProfile::GlobalStats::SnapshotMaps(
                mmap_iter->end_addr - 1 <= last_address);
     }
   }
-  MemoryRegionMap::Unlock();
 
   // The total committed usage in all_ (from /proc/$PID/maps) is sometimes
   // smaller than the total committed mmap'ed addresses and unhooked regions

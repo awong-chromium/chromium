@@ -147,10 +147,10 @@ int MemoryRegionMap::recursion_count_ = 0;  // GUARDED_BY(owner_lock_)
 pthread_t MemoryRegionMap::lock_owner_tid_;  // GUARDED_BY(owner_lock_)
 int64 MemoryRegionMap::map_size_ = 0;
 int64 MemoryRegionMap::unmap_size_ = 0;
-MemoryRegionMap::Bucket** MemoryRegionMap::bucket_table_ = NULL;
+HeapProfileBucket** MemoryRegionMap::bucket_table_ = NULL;
 int MemoryRegionMap::num_buckets_ = 0;
 int MemoryRegionMap::saved_buckets_count_ = 0;
-MemoryRegionMap::Bucket MemoryRegionMap::saved_buckets_[20];
+HeapProfileBucket MemoryRegionMap::saved_buckets_[20];
 const void* MemoryRegionMap::saved_buckets_keys_[20][kMaxStackDepth];
 
 // ========================================================================= //
@@ -222,7 +222,7 @@ void MemoryRegionMap::Init(int max_stack_depth, bool use_buckets) {
   if (use_buckets) {
     const int table_bytes = kHashTableSize * sizeof(*bucket_table_);
     recursive_insert = true;
-    bucket_table_ = reinterpret_cast<Bucket**>(
+    bucket_table_ = reinterpret_cast<HeapProfileBucket**>(
         MyAllocator::Allocate(table_bytes));
     recursive_insert = false;
     memset(bucket_table_, 0, table_bytes);
@@ -244,8 +244,8 @@ bool MemoryRegionMap::Shutdown() {
   }
   if (bucket_table_ != NULL) {
     for (int i = 0; i < kHashTableSize; i++) {
-      for (Bucket* x = bucket_table_[i]; x != 0; /**/) {
-        Bucket* b = x;
+      for (HeapProfileBucket* x = bucket_table_[i]; x != 0; /**/) {
+        HeapProfileBucket* b = x;
         x = x->next;
         MyAllocator::Free(b->stack, 0);
         MyAllocator::Free(b, 0);
@@ -272,12 +272,12 @@ bool MemoryRegionMap::Shutdown() {
   return deleted_arena;
 }
 
-bool MemoryRegionMap::IsWorking() {
-  RAW_VLOG(10, "MemoryRegionMap IsWorking");
+bool MemoryRegionMap::IsRecording() {
+  RAW_VLOG(10, "MemoryRegionMap IsRecording");
   Lock();
   bool is_working = (client_count_ > 0);
   Unlock();
-  RAW_VLOG(10, "MemoryRegionMap IsWorking done");
+  RAW_VLOG(10, "MemoryRegionMap IsRecording done");
   return is_working;
 }
 
@@ -372,8 +372,8 @@ bool MemoryRegionMap::FindAndMarkStackRegion(uintptr_t stack_top,
   return region != NULL;
 }
 
-MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
-                                                    const void* const key[]) {
+HeapProfileBucket* MemoryRegionMap::GetBucket(int depth,
+                                              const void* const key[]) {
   // Make hash-value
   uintptr_t h = 0;
   for (int i = 0; i < depth; i++) {
@@ -386,7 +386,7 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
 
   // Lookup stack trace in table
   unsigned int buck = ((unsigned int) h) % kHashTableSize;
-  for (Bucket* b = bucket_table_[buck]; b != 0; b = b->next) {
+  for (HeapProfileBucket* b = bucket_table_[buck]; b != 0; b = b->next) {
     if ((b->hash == h) &&
         (b->depth == depth) &&
         std::equal(key, key + depth, b->stack)) {
@@ -396,7 +396,7 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
 
   // Create new bucket
   const size_t key_size = sizeof(key[0]) * depth;
-  Bucket* b;
+  HeapProfileBucket* b;
   if (recursive_insert) {  // recursion: save in saved_buckets_
     const void** kcopy = saved_buckets_keys_[saved_buckets_count_];
     std::copy(key, key + depth, kcopy);
@@ -412,8 +412,8 @@ MemoryRegionMap::Bucket* MemoryRegionMap::GetBucket(int depth,
     recursive_insert = false;
     std::copy(key, key + depth, kcopy);
     recursive_insert = true;
-    b = reinterpret_cast<Bucket*>(
-        MyAllocator::Allocate(sizeof(Bucket)));
+    b = reinterpret_cast<HeapProfileBucket*>(
+        MyAllocator::Allocate(sizeof(HeapProfileBucket)));
     recursive_insert = false;
     memset(b, 0, sizeof(*b));
     b->stack = kcopy;
@@ -496,10 +496,12 @@ inline void MemoryRegionMap::HandleSavedRegionsLocked(
 
 inline void MemoryRegionMap::HandleSavedBucketsLocked() {
   while (saved_buckets_count_ > 0) {
-    Bucket b = saved_buckets_[--saved_buckets_count_];
+    HeapProfileBucket b = saved_buckets_[--saved_buckets_count_];
     unsigned int buck = ((unsigned int) b.hash) % kHashTableSize;
     bool is_found = false;
-    for (Bucket* found = bucket_table_[buck]; found != 0; found = found->next) {
+    for (HeapProfileBucket* found = bucket_table_[buck];
+         found != 0;
+         found = found->next) {
       if ((found->hash == b.hash) && (found->depth == b.depth) &&
           std::equal(b.stack, b.stack + b.depth, found->stack)) {
         found->allocs += b.allocs;
@@ -516,8 +518,8 @@ inline void MemoryRegionMap::HandleSavedBucketsLocked() {
     const void** kcopy = reinterpret_cast<const void**>(
         MyAllocator::Allocate(key_size));
     std::copy(b.stack, b.stack + b.depth, kcopy);
-    Bucket* new_b = reinterpret_cast<Bucket*>(
-        MyAllocator::Allocate(sizeof(Bucket)));
+    HeapProfileBucket* new_b = reinterpret_cast<HeapProfileBucket*>(
+        MyAllocator::Allocate(sizeof(HeapProfileBucket)));
     memset(new_b, 0, sizeof(*new_b));
     new_b->hash = b.hash;
     new_b->depth = b.depth;
@@ -593,7 +595,7 @@ void MemoryRegionMap::RecordRegionAddition(const void* start, size_t size) {
     // This will (eventually) allocate storage for and copy over the stack data
     // from region.call_stack_data_ that is pointed by region.call_stack().
   if (bucket_table_ != NULL) {
-    Bucket* b = GetBucket(depth, region.call_stack);
+    HeapProfileBucket* b = GetBucket(depth, region.call_stack);
     ++b->allocs;
     b->alloc_size += size;
     if (!recursive_insert) {
@@ -727,7 +729,7 @@ void MemoryRegionMap::RecordRegionRemovalInBucket(int depth,
                                                   const void* const stack[],
                                                   size_t size) {
   if (bucket_table_ == NULL) return;
-  Bucket* b = GetBucket(depth, stack);
+  HeapProfileBucket* b = GetBucket(depth, stack);
   ++b->frees;
   b->free_size += size;
 }

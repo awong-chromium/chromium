@@ -281,8 +281,8 @@ class HeapProfileTable {
 
   // Arguments that need to be passed DumpBucketIterator callback below.
   struct BufferArgs {
-    BufferArgs(char* a, int b, int c)
-      : buf(a), buflen(b), bufsize(c) { }
+    BufferArgs(char* arg_buf, int arg_buflen, int arg_bufsize)
+        : buf(arg_buf), buflen(arg_buflen), bufsize(arg_bufsize) { }
 
     char* buf;
     int buflen;

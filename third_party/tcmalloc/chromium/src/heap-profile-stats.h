@@ -6,14 +6,28 @@
 // counts.  These structs are commonly used for malloc (in HeapProfileTable)
 // and mmap (in MemoryRegionMap).
 
+// A bucket is data structure for heap profiling to store a pair of a stack
+// trace and counts of allocation and deallocation.  Buckets are stored in a
+// hash table which is declared as HeapProfileBucket**.
+//
+// A hash value is computed from a stack trace.  Collision in the hash table
+// is resolved by separate chaining with linked lists.
+//
+// For Bucket** bucket_table,
+// bucket[0] => NULL
+// bucket[1] => HeapProfileBucket() => HeapProfileBucket() => NULL
+// ...
+// bucket[i] => HeapProfileBucket() => NULL
+// ...
+
 #ifndef HEAP_PROFILE_STATS_H_
 #define HEAP_PROFILE_STATS_H_
 
 struct HeapProfileStats {
   // Returns true if the two HeapProfileStats are semantically equal.
-  bool Equivalent(const HeapProfileStats& x) const {
-    return allocs - frees == x.allocs - x.frees &&
-      alloc_size - free_size == x.alloc_size - x.free_size;
+  bool Equivalent(const HeapProfileStats& other) const {
+    return allocs - frees == other.allocs - other.frees &&
+        alloc_size - free_size == other.alloc_size - other.free_size;
   }
 
   int32 allocs;      // Number of allocation calls.

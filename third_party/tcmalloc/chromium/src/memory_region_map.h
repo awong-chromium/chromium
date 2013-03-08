@@ -73,6 +73,7 @@ class MemoryRegionMap {
   // don't take the address of it!
   static const int kMaxStackDepth = 32;
 
+  // Size of the hash table for buckets.
   static const int kHashTableSize = 179999;
 
  public:
@@ -90,7 +91,9 @@ class MemoryRegionMap {
   // are automatically shrunk to "max_stack_depth" when they are recorded.
   // Init() can be called more than once w/o harm, largest max_stack_depth
   // will be the effective one.
-  // It counts mmap and munmap sizes per stack trace if "use_buckets".
+  // When "use_buckets" is true, then counts of mmap and munmap sizes will be
+  // recorded with each stack trace.  If Init() is called more than once, then
+  // counting will be effective after any call contained "use_buckets" of true.
   // It will install mmap, munmap, mremap, sbrk hooks
   // and initialize arena_ and our hook and locks, hence one can use
   // MemoryRegionMap::Lock()/Unlock() to manage the locks.
@@ -103,8 +106,9 @@ class MemoryRegionMap {
   // the number of Init() calls.
   static bool Shutdown();
 
-  // Return true if MemoryRegionMap is initialized and working.
-  static bool IsWorking();
+  // Return true if MemoryRegionMap is initialized and recording, i.e. when
+  // then number of Init() calls are more than the number of Shutdown() calls.
+  static bool IsRecording();
 
   // Locks to protect our internal data structures.
   // These also protect use of arena_ if our Init() has been done.
@@ -124,10 +128,6 @@ class MemoryRegionMap {
    private:
     DISALLOW_COPY_AND_ASSIGN(LockHolder);
   };
-
-  // Profile stats.
-  typedef HeapProfileStats Stats;
-  typedef HeapProfileBucket Bucket;
 
   // A memory region that we know about through malloc_hook-s.
   // This is essentially an interface through which MemoryRegionMap
@@ -228,11 +228,12 @@ class MemoryRegionMap {
   // Iterate over the buckets which store mmap and munmap counts per stack
   // trace.  It calls "callback" for each bucket, and passes "arg" to it.
   template<class Type>
-  static void IterateBuckets(void (*callback)(const Bucket*, Type), Type arg);
+  static void IterateBuckets(void (*callback)(const HeapProfileBucket*, Type),
+                             Type arg);
 
   // Get the bucket for the caller stack trace "key" of depth "depth"
   // creating the bucket if needed.
-  static Bucket* GetBucket(int depth, const void* const key[]);
+  static HeapProfileBucket* GetBucket(int depth, const void* const key[]);
 
  private:  // our internal types ==============================================
 
@@ -316,7 +317,7 @@ class MemoryRegionMap {
   static int64 unmap_size_;
 
   // Bucket hash table.
-  static Bucket** bucket_table_;
+  static HeapProfileBucket** bucket_table_;
   static int num_buckets_;
 
   // Number of unprocessed bucket inserts.
@@ -326,7 +327,7 @@ class MemoryRegionMap {
   // caused by a GetBucket call).
   // Bucket has no constructor, so that c-tor execution does not interfere
   // with the any-time use of the static memory behind saved_buckets.
-  static Bucket saved_buckets_[20];
+  static HeapProfileBucket saved_buckets_[20];
 
   static const void* saved_buckets_keys_[20][kMaxStackDepth];
 
@@ -383,9 +384,9 @@ class MemoryRegionMap {
 
 template <class Type>
 void MemoryRegionMap::IterateBuckets(
-    void (*callback)(const Bucket*, Type), Type arg) {
+    void (*callback)(const HeapProfileBucket*, Type), Type arg) {
   for (int b = 0; b < kHashTableSize; b++) {
-    for (Bucket* x = bucket_table_[b]; x != NULL; x = x->next) {
+    for (HeapProfileBucket* x = bucket_table_[b]; x != NULL; x = x->next) {
       callback(x, arg);
     }
   }
